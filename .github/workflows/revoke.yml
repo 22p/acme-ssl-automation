@@ -1,0 +1,89 @@
+name: acme ssl revoke
+
+# 触发条件
+on:
+  workflow_dispatch:
+    inputs:
+      DOMAIN:
+        description: 'Specify the domain to add to the process.'
+        required: true
+        default: 'example.com'
+      ACME_SERVER:
+        description: 'Choose the Certificate Authority (CA) name.'
+        required: true
+        default: 'letsencrypt'
+        type: choice
+        options:
+          - letsencrypt
+          - google
+          - zerossl
+          - trustasia
+          - staging_google
+          - staging_letsencrypt
+      APPEND:
+        description: 'Specify whether to use External Account Binding (EAB).'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - --eab
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  ssl-cert-revoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: .lego
+
+      - name: Install lego
+        shell: bash
+        run: |
+          RELEASE_INFO=$(curl -s https://api.github.com/repos/go-acme/lego/releases/latest)
+          TAG_NAME=$(echo $RELEASE_INFO | jq -r '.tag_name')
+          curl -sLO $(echo $RELEASE_INFO | jq -r ".assets[] | select(.name == \"lego_${TAG_NAME}_linux_amd64.tar.gz\") | .browser_download_url")
+          tar -xzf lego_*
+
+      - name: Extract account files for lego
+        shell: bash
+        run: |
+          echo "${{ secrets.LEGO_ACCOUNT_TAR }}" | base64 -d | tar -C . -xz
+
+      # 吊销证书
+      - name: Revoke Certificates
+        shell: bash
+        run: |
+          ./lego --accept-tos --email ${{ secrets.CERT_EMAIL }} \
+          --server ${!ACME_SERVER} --domains ${{ github.event.inputs.DOMAIN }} ${{ github.event.inputs.APPEND }} \
+          revoke
+        env:
+          ACME_SERVER: ${{ github.event.inputs.ACME_SERVER }}
+          letsencrypt: https://acme-v02.api.letsencrypt.org/directory
+          zerossl: https://acme.zerossl.com/v2/DV90
+          google: https://dv.acme-v02.api.pki.goog/directory
+          trustasia: https://acme.trustasia.com/v2/DV90/directory
+          staging_google: https://dv.acme-v02.test-api.pki.goog/directory
+          staging_letsencrypt: https://acme-staging-v02.api.letsencrypt.org/directory
+
+      - name: Push Certificates to GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cd ./.lego
+          git add certificates
+          if [ -z "$(git diff --cached)" ]; then
+            echo "No changes in certificate to commit."
+          else
+            git commit -m "Delete the certificate ${{ github.event.inputs.DOMAIN }}"
+            git push
+          fi

@@ -1,0 +1,84 @@
+name: acme ssl automation
+
+# 触发条件
+on:
+  workflow_dispatch:
+  schedule:
+    # 每周六运行一次
+    - cron: '0 0 * * 6'
+
+permissions:
+  contents: write
+  packages: read
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  ssl-cert-issuer:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: .lego
+
+      - name: Install lego
+        shell: bash
+        run: |
+          RELEASE_INFO=$(curl -s https://api.github.com/repos/go-acme/lego/releases/latest)
+          TAG_NAME=$(echo $RELEASE_INFO | jq -r '.tag_name')
+          curl -sLO $(echo $RELEASE_INFO | jq -r ".assets[] | select(.name == \"lego_${TAG_NAME}_linux_amd64.tar.gz\") | .browser_download_url")
+          tar -xzf lego_*
+
+      - name: Extract account files for lego
+        shell: bash
+        run: |
+          echo "${{ secrets.LEGO_ACCOUNT_TAR }}" | base64 -d | tar -C . -xz
+
+      # 申请或续订证书
+      - name: Issue or Renew Certificates
+        shell: bash
+        run: |
+          DOMAIN_LIST=(${{ secrets.DOMAIN_LIST }})
+
+          for DOMAIN_INFO in "${DOMAIN_LIST[@]}"; do
+            IFS=',' read -r DOMAIN DNS ACME_SERVER APPEND VALID_DAYS RENEW_BEFORE_DAYS <<< $DOMAIN_INFO
+
+            NOT_AFTER=""
+            if [[ -n "$VALID_DAYS" ]]; then
+              NOT_AFTER="--not-after=$(date -u -d "+$VALID_DAYS days" '+%Y-%m-%dT%H:%M:%SZ')"
+            fi
+
+            ACTION="renew --no-random-sleep --days ${RENEW_BEFORE_DAYS:-30}"
+            if [ ! -f "./.lego/certificates/$DOMAIN.crt" ]; then
+              ACTION="run"
+            fi
+
+            ${{ secrets.DNS_API }}
+            ./lego --accept-tos --email ${{ secrets.CERT_EMAIL }} \
+            --dns $DNS --server ${!ACME_SERVER} \
+            --domains $DOMAIN --domains *.$DOMAIN $APPEND \
+            $ACTION $NOT_AFTER
+          done
+        env:
+          letsencrypt: https://acme-v02.api.letsencrypt.org/directory
+          zerossl: https://acme.zerossl.com/v2/DV90
+          google: https://dv.acme-v02.api.pki.goog/directory
+          trustasia: https://acme.trustasia.com/v2/DV90/directory
+          staging_google: https://dv.acme-v02.test-api.pki.goog/directory
+          staging_letsencrypt: https://acme-staging-v02.api.letsencrypt.org/directory
+
+      - name: Push Certificates to GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cd ./.lego
+          git add certificates
+          if [ -z "$(git diff --cached)" ]; then
+            echo "No changes in certificates to commit."
+          else
+            git commit -m "Upload certificates on $(date '+%Y-%m-%d %H:%M:%S')"
+            git push
+          fi
