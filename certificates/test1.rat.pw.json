@@ -1,0 +1,5 @@
+{
+	"domain": "test1.rat.pw",
+	"certUrl": "https://acme-staging-v02.api.letsencrypt.org/acme/cert/2b7e8a07916ae543842012f3201c43353e68",
+	"certStableUrl": "https://acme-staging-v02.api.letsencrypt.org/acme/cert/2b7e8a07916ae543842012f3201c43353e68"
+}
